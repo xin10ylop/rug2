@@ -126,6 +126,7 @@ class Engine:
         self.lat = deque(maxlen=200)  # (deshred->sent ms)
         self._bh_time = 0.0
         self._paper_sims: dict = {}
+        self._executed: set = set()
         self.started = time.time()
 
     # ================================================================ lifecycle
@@ -155,6 +156,8 @@ class Engine:
             if op in self.book.ops:
                 self.book.add_creator(creator, op, funder, lam)
                 self.book.creators[creator].launches = launches
+                self.book.creators[creator].seen = launches
+        self._restored = [c for c in self.book.creators if self.book.creators[c].funder != "static"]
         for addr, op, role in self.store.q("SELECT addr, operator, role FROM funders"):
             if op in self.book.ops:
                 self.book.add_funder(addr, op, role)
@@ -191,9 +194,19 @@ class Engine:
             # launches made before start-up must count, or a repeat launch would look like a first launch
             counts = await asyncio.gather(*[self._count_launches(c, since) for c in new])
             for c, k in zip(new, counts):
-                self.book.creators[c].launches = k
+                self.book.creators[c].launches = self.book.creators[c].seen = k
                 self.store.x("UPDATE fundings SET launches=? WHERE creator=?", (k, c))
             log.info("bootstrap %s: %d creators (%d already launched)", addr[:8], n, sum(1 for k in counts if k))
+        # creators restored from the DB may have launched while the engine was down
+        restored = getattr(self, "_restored", [])
+        if restored:
+            since = int(time.time() - 48 * 3600)
+            counts = await asyncio.gather(*[self._count_launches(c, since) for c in restored])
+            for c, k in zip(restored, counts):
+                ci = self.book.creators.get(c)
+                if ci and k > ci.launches:
+                    ci.launches = ci.seen = k
+                    self.store.x("UPDATE fundings SET launches=? WHERE creator=?", (k, c))
         self.store.commit()
 
     async def _count_launches(self, creator: str, since: int) -> int:
@@ -270,7 +283,11 @@ class Engine:
             if not info:
                 return
             self.decided[mint] = "pending"
-            asyncio.get_running_loop().create_task(self._decide(ntx, c, info, info.launches, t_seen, source))
+            # creators fire several tokens within a second: count sightings synchronously so the
+            # 2nd create of a burst is never mistaken for a first launch
+            launch_no = max(info.seen, info.launches)
+            info.seen = launch_no + 1
+            asyncio.get_running_loop().create_task(self._decide(ntx, c, info, launch_no, t_seen, source))
             return
 
     async def _decide(self, ntx: NormTx, c: dict, info, launch_no: int, t_seen: float, source: str):
@@ -328,15 +345,16 @@ class Engine:
                                  mayhem=int(c["mayhem"]), creator_fee_bps=cfee, sol_quoted=int(c["sol_quoted"]),
                                  first_launch=int(launch_no == 0), name=c.get("name"), symbol=c.get("symbol"),
                                  uri=c.get("uri"), decision=decision, reason=reason or "", mcap_after_bundle=mcap_est)
-        # every launch of a watched operator gets its tape recorded (traded or not)
-        self._track(mint, op.id, c["user"], ntx.slot, keys, curve)
+        # every eligible launch (and repeat / off-signature launches, for learning) gets its tape recorded
+        if decision != "skip" or (reason or "").startswith(("not_first_launch", "dev_buy_")):
+            self._track(mint, op.id, c["user"], ntx.slot, keys, curve)
         log.info("launch %s op=%s creator=%s #%d dev=%.2f mcap=%.1f -> %s %s (%s +%.0fms)", mint[:8], op.id,
                  c["user"][:6], launch_no, dev_sol / LAMPORTS, mcap_est, decision, reason or "", source,
                  (time.time() - t_seen) * 1000)
         if decision == "buy":
             await self._buy(mint, op, keys, curve, ntx.slot, t_seen)
         elif decision in ("paper", "shadow") and self.cfg.paper_simulate:
-            if source == "processed":  # create already executed
+            if source == "processed" or mint in self._executed:  # create already executed
                 asyncio.get_running_loop().create_task(self._paper_simulate(mint, keys, curve, op))
             else:
                 self._paper_sims[mint] = (keys, curve, op)
@@ -512,7 +530,9 @@ class Engine:
             if mint not in self.decided:  # create via CPI: track tape for learning only
                 self.decided[mint] = "untracked_cpi"
         info.launches += 1
+        info.seen = max(info.seen, info.launches)
         self.store.bump_launches(creator)
+        self._executed.add(mint)
         ps = self._paper_sims.pop(mint, None)
         if ps:
             asyncio.get_running_loop().create_task(self._paper_simulate(mint, *ps))

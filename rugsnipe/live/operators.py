@@ -68,7 +68,8 @@ class CreatorInfo:
     operator: str
     funder: str
     lamports: int
-    launches: int = 0
+    launches: int = 0  # executed launches seen
+    seen: int = 0  # launches seen pre-execution (deshred) or executed, whichever is higher
     t: float = field(default_factory=time.time)
     expires: float = 0.0
 

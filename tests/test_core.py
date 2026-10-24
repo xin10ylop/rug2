@@ -155,3 +155,30 @@ def test_engine_parses_own_buy_and_sell():
             pos.state = "selling"
             eng._on_our_tx(sell)
             assert pos.state == "closed"
+
+
+def test_burst_of_creates_counts_launch_numbers_synchronously():
+    """Two creates by one creator inside the same second: only the first may be a 'first launch'."""
+    import copy
+    ntx = from_rpc_json(load("create_v2_devbuy.json"))
+    ix = [ix for n, ix in pump_instructions(ntx, include_inner=False) if n in ("create", "create_v2")][0]
+    creator = decode_create_ix(ntx, ix)["user"]
+    ntx2 = copy.deepcopy(ntx)
+    mint_idx = ix.accounts[0]
+    ntx2.keys[mint_idx] = "So11111111111111111111111111111111111111112"  # a different mint
+    seen = []
+    with tempfile.TemporaryDirectory() as tmp:
+        eng = _engine(tmp, "me")
+        eng.book.add_creator(creator, "t", "f", 1)
+
+        async def fake_decide(ntx_, c, info, launch_no, t, source):
+            seen.append(launch_no)
+
+        eng._decide = fake_decide
+
+        async def go():
+            eng._maybe_trigger(ntx, 0.0, "deshred")
+            eng._maybe_trigger(ntx2, 0.0, "deshred")
+            await asyncio.sleep(0)
+        asyncio.run(go())
+    assert seen == [0, 1]

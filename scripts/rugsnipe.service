@@ -1,0 +1,22 @@
+# /etc/systemd/system/rugsnipe.service  (adjust User and WorkingDirectory)
+# secrets live in /etc/rugsnipe.env (chmod 600):
+#   TRITON_RPC_URL=https://<endpoint>.mainnet.rpcpool.com/<token>
+#   TRITON_GRPC_URL=https://<endpoint>.mainnet.rpcpool.com
+#   TRITON_X_TOKEN=<token>
+[Unit]
+Description=rugsnipe live engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=trader
+WorkingDirectory=/home/trader/rug2
+EnvironmentFile=/etc/rugsnipe.env
+ExecStart=/home/trader/rug2/.venv/bin/python -m rugsnipe.cli live --config config/config.toml
+Restart=always
+RestartSec=3
+# never let the box OOM the trader silently
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
