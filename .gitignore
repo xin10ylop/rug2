@@ -23,3 +23,6 @@ dist/
 # generated grpc stubs
 rugsnipe/proto/*_pb2.py
 rugsnipe/proto/*_pb2_grpc.py
+
+# test fixtures are real chain data and must be versioned
+!tests/fixtures/*.jsonl
