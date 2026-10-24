@@ -106,6 +106,13 @@ For a candidate with out-of-sample `oos_first.mean ≥ 0.05`, `n ≥ 20` and `t 
 
 ## Notes
 
+- **Operator schedule.** `djtd` works in sessions, roughly **05:00–11:00 and 13:00–21:00 UTC**,
+  with 1.5–3 hour gaps between them. Over 72 hours its sessions produced 8–39 launches each.
+  It was idle from 11:17 UTC on 2026-10-24 while this repo was built.
+  - The operator's money path: bank `Df8CJQR7…` → relay `DJTDXMc7…` → fresh creator. The creator launches and sends its proceeds back through the relay to the bank.
+  - Profits per creator ranged from +13 to +58 SOL, so this operator is still active and motivated.
+  - Both the bank and the relay are watched. A new relay is picked up automatically, because a bank → fresh wallet transfer of 10–40 SOL registers the wallet and `follow_chain` follows its fundings.
+  - If neither the bank nor the relay moves for more than 24 hours, treat the operator as gone and promote a discovery candidate instead.
 - **Restarts are safe.** Watched creators, child funders and launch counts are restored from SQLite; creators funded while the engine was down are recovered from the funder's history at startup.
 - **Operator rotation.** A watched funder that moves ≥ 40 SOL (`follow_child_funders_min_sol`) to a fresh wallet makes that wallet a child funder automatically. Creators that forward funds to a fresh wallet (`follow_chain`) pass the identity on.
 - **Costs.**

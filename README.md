@@ -41,7 +41,10 @@ Following early snipers (entering after their buys, no lookahead) is also negati
 ## 2. The edge that survived validation
 
 The one operator that holds up we call `djtd`.
-- **Funding:** a mother wallet, `DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8`, funds fresh creator wallets with 4–19 SOL. Funding is routed through a temporary account, so it is attributed by balance changes, not transfer instructions.
+- **Funding:** a relay wallet, `DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8`, funds fresh creator wallets with 4–24 SOL. Funding is routed through a temporary account, so it is attributed by balance changes, not transfer instructions.
+- **Behind the relay:** a bank wallet, `Df8CJQR7fUTYAQSQwtsgUDs5b6JWNULzwhJJXDCJkdya`.
+  - It funds the relay, receives each creator's proceeds back (+13 to +58 SOL per creator), and seeds about 100 pump wallets with ~2 SOL each.
+  - The engine watches both the bank and the relay, so a relay rotation is followed automatically.
 - **Launch pattern:** each creator fires 1–18 tokens on trending narratives, with about 10 SOL dev buys.
 - **Mechanics:** legacy `create` (SPL Token) + `extend_account` + `buy`, via several launch tools.
 
