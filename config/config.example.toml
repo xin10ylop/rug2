@@ -1,0 +1,69 @@
+# Copy to config/config.toml (gitignored) and adjust. Secrets come from env vars:
+#   export TRITON_RPC_URL="https://<your-endpoint>.mainnet.rpcpool.com/<token>"
+#   export TRITON_GRPC_URL="https://<your-endpoint>.mainnet.rpcpool.com"
+#   export TRITON_X_TOKEN="<token>"
+
+[general]
+mode = "paper"                    # paper: decide + record, never send.  live: send transactions
+db_path = "data/live.db"
+operators_path = "config/operators.json"
+status_path = "data/status.json"
+log_level = "INFO"
+
+[connection]
+rpc_url = "${TRITON_RPC_URL}"
+grpc_url = "${TRITON_GRPC_URL}"
+grpc_token = "${TRITON_X_TOKEN}"
+
+[wallet]
+keypair_path = "keys/trader.json"   # python -m rugsnipe.cli keygen --out keys/trader.json
+
+# Same signed bytes go to every route of a side; only one copy can land.
+# The tip goes to a Helius Sender tip account (required by Sender; harmless elsewhere).
+[[routes]]
+name = "triton"
+url = "${TRITON_RPC_URL}"
+sides = ["buy", "sell"]
+
+[[routes]]
+name = "helius_fra_swqos"
+url = "http://fra-sender.helius-rpc.com/fast?swqos_only=true"
+warm_url = "http://fra-sender.helius-rpc.com/ping"
+sides = ["buy"]
+
+[[routes]]
+name = "helius_fra_max"
+url = "http://fra-sender.helius-rpc.com/fast"
+warm_url = "http://fra-sender.helius-rpc.com/ping"
+sides = ["sell"]
+
+[fees]
+# The validated edge does not need block-0: entries at slot+1..+5 keep it (see README),
+# so buys pay for reliability, not for winning the race.
+buy_priority_lamports = 200000      # 0.0002 SOL total priority (cu_price derived from cu limit)
+buy_tip_lamports = 10000            # SWQOS-only Sender tip (min 5,000)
+sell_priority_lamports = 500000     # exits matter more (rug risk): escalates x2,x3,x4 on retries
+sell_tip_lamports = 1000000         # Sender "max" tip (min 0.001 SOL)
+buy_cu_limit = 140000
+sell_cu_limit = 100000
+tip_accounts = [
+  "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE", "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
+  "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta", "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
+  "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD", "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
+  "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF", "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
+  "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey", "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
+]
+
+[risk]
+max_open_positions = 2
+max_size_sol = 0.25                 # hard cap per trade regardless of operator policy
+daily_loss_limit_sol = 0.5          # stop opening positions after this realized loss (UTC day)
+min_balance_sol = 0.2
+max_consecutive_losses = 6          # per operator -> operator disabled
+kill_file = "STOP"                  # touch STOP to halt new buys immediately
+
+[behaviour]
+tape_minutes = 10.0
+sell_retry_s = 1.2
+buy_expire_slots = 20
+learner_every_s = 600

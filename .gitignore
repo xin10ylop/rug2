@@ -1,0 +1,25 @@
+# secrets
+.env
+*.env
+config/config.toml
+keys/
+*.keypair.json
+id.json
+# data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+reports/
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+# generated grpc stubs
+rugsnipe/proto/*_pb2.py
+rugsnipe/proto/*_pb2_grpc.py

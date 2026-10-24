@@ -1,0 +1,9 @@
+solders>=0.27
+base58>=2.1
+aiohttp>=3.9
+grpcio>=1.66
+grpcio-tools>=1.66
+protobuf>=5.27
+numpy>=1.26
+tomli>=2.0; python_version < "3.11"
+uvloop>=0.19; sys_platform != "win32"

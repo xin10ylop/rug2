@@ -1,0 +1,34 @@
+{
+ "updated": "2026-10-24T15:00:00Z",
+ "operators": [
+  {
+   "id": "djtd",
+   "label": "DJTDXMc7 heavy narrative deployer (funds fresh creators 4-19 SOL, ~10 SOL dev buys)",
+   "funders": ["DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8"],
+   "fund_min_sol": 2.0,
+   "fund_max_sol": 30.0,
+   "fresh_only": true,
+   "follow_chain": true,
+   "follow_child_funders_min_sol": 40.0,
+   "dev_buy_min_sol": 8.0,
+   "dev_buy_max_sol": 14.0,
+   "allow_mayhem": false,
+   "max_creator_fee_bps": 30,
+   "creator_ttl_h": 24,
+   "policy": {
+    "enabled": false,
+    "size_sol": 0.1,
+    "tp_pct": 30.0,
+    "max_hold_s": 60.0,
+    "sl_pct": null,
+    "max_entry_mcap_mult": 1.15,
+    "max_slot_offset": 8,
+    "first_launch_only": true,
+    "max_open": 2,
+    "auto": true,
+    "min_live_ev": 0.0
+   },
+   "note": "72h out-of-sample (2026-10-21..24): first launches n=64 mean +10.9%/trade t=2.4 at slot+1..+5 entry; all launches n=241 +3.8% t=1.5; 12h buckets ranged -14%..+29%. Validate live at size 0.1 before scaling."
+  }
+ ]
+}
