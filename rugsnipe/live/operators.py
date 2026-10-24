@@ -68,10 +68,12 @@ class CreatorInfo:
     operator: str
     funder: str
     lamports: int
-    launches: int = 0  # executed launches seen
+    launches: int = 0  # executed launches since the latest funding
     seen: int = 0  # launches seen pre-execution (deshred) or executed, whichever is higher
     t: float = field(default_factory=time.time)
     expires: float = 0.0
+    fund_slot: int = 0  # slot of the latest funding; launch counts run from here
+    fund_time: float = 0.0
 
 
 class OperatorBook:
@@ -116,17 +118,26 @@ class OperatorBook:
         self.version += 1
         return True
 
-    def add_creator(self, creator: str, op_id: str, funder: str, lamports: int) -> bool:
+    def add_creator(self, creator: str, op_id: str, funder: str, lamports: int, slot: int = 0,
+                    fund_time: float = 0.0) -> bool:
+        """Register a creator, or re-arm one that is funded again. True if anything changed.
+
+        Operators recycle wallets: drained to 0, funded again hours or days later. Launch counts run
+        from the latest funding, because "first launch after a funding" is what the edge was measured on."""
         op = self.ops.get(op_id)
         if not op:
             return False
-        new = creator not in self.creators
-        info = self.creators.get(creator) or CreatorInfo(creator, op_id, funder, lamports)
-        info.expires = time.time() + op.creator_ttl_h * 3600
-        self.creators[creator] = info
-        if new:
+        info = self.creators.get(creator)
+        if info is not None and (info.funder == "static" or slot <= info.fund_slot):
+            return False
+        if info is None:
+            info = self.creators[creator] = CreatorInfo(creator, op_id, funder, lamports)
             self.version += 1
-        return new
+        info.operator, info.funder, info.lamports = op_id, funder, lamports
+        info.fund_slot, info.fund_time = slot, fund_time or time.time()
+        info.launches = info.seen = 0
+        info.expires = info.fund_time + op.creator_ttl_h * 3600
+        return True
 
     def expire(self):
         now = time.time()

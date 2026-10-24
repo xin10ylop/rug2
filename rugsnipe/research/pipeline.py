@@ -3,9 +3,12 @@
     python -m rugsnipe.research.pipeline --hours 8 --out data/discovery/run1 --rpc $TRITON_RPC_URL
 
 1. all launches in the window (getTransactionsForAddress on the mint authority: 100 creates/call)
-2. creator funding (first transactions of each fresh creator; balance-delta attribution, so
-   routing through temp accounts / programs is still attributed to the paying wallet)
-3. candidate class: fresh creator, SOL quote, not mayhem, default creator fee, dev buy >= --min-dev
+2. creator funding: the funding right before each creator's first launch in the window, attributed
+   by balance deltas (routing through temp accounts still resolves to the paying wallet). Fresh means
+   the wallet held 0 SOL when funded, as in the live engine: operators recycle aged wallets drained
+   to 0, so a wallet's age or history says nothing.
+3. candidate class: fresh at funding, launched within 2 txs of it, SOL quote, not mayhem, default
+   creator fee, dev buy >= --min-dev
 4. trade tapes for candidates, fill-realistic simulation (entry end of slot+2, all costs)
 5. funders whose candidates are positive in-sample -> 72h history (out-of-sample) via operator_history
 6. candidates.json: ranked funders with in-sample + out-of-sample stats and a suggested operator
@@ -30,7 +33,7 @@ from ..decode import from_rpc_json, pump_events
 from ..rpc import RPC, RpcError
 from ..sim import SimParams, build_tape, simulate
 from .backfill import _gather_limited, _tape_row
-from .launches import extract_launches, inbound_transfers
+from .launches import extract_launches, funding_source
 from .operator_history import evaluate_dir, gtfa
 
 KNOWN_PLATFORMS = {"AxiomRXZAq1Jgjj9pHmNqVP7Lhu67wLXZJZbaK87TTSk"}
@@ -60,10 +63,13 @@ async def run(a):
             launches = [l for tx in txs for l in extract_launches(from_rpc_json(tx))]
             lp.write_text("\n".join(json.dumps(l) for l in launches))
         launches = [json.loads(x) for x in lp.read_text().splitlines() if x.strip()]
+        # a cached run keeps its own window: out-of-sample must end where these launches begin
+        since = min((l["block_time"] for l in launches if l.get("block_time")), default=since)
         print(f"[1] {len(launches)} launches in {a.hours}h", flush=True)
-        first_slot = {}
+        first_slot, first_time = {}, {}
         for l in launches:
-            first_slot[l["user"]] = min(first_slot.get(l["user"], 1 << 62), l["slot"])
+            if l["slot"] < first_slot.get(l["user"], 1 << 62):
+                first_slot[l["user"]], first_time[l["user"]] = l["slot"], l["block_time"]
         pre = [l for l in launches if l.get("sol_quoted") and not l.get("mayhem") and (l.get("creator_fee_bps") or 0) <= 30
                and a.min_dev * 1e9 <= sum(d["sol"] for d in l["dev_buys"]) < 80e9]
         print(f"[3] {len(pre)} launches in the candidate class (dev buy >= {a.min_dev} SOL)", flush=True)
@@ -74,28 +80,32 @@ async def run(a):
         async def trace(creator):
             if creator in fund:
                 return
+            t0 = first_time[creator]
             try:
                 res = await rpc.call("getTransactionsForAddress", [creator, {
-                    "transactionDetails": "full", "sortOrder": "asc", "limit": 4, "encoding": "json",
-                    "maxSupportedTransactionVersion": 1, "commitment": "confirmed", "filters": {"status": "succeeded"}}])
+                    "transactionDetails": "full", "sortOrder": "desc", "limit": 8, "encoding": "json",
+                    "maxSupportedTransactionVersion": 1, "commitment": "confirmed",
+                    "filters": {"blockTime": {"gte": t0 - 48 * 3600, "lte": t0}, "status": "succeeded"}}])
             except RpcError:
                 return
-            data = res.get("data") or []
-            rec = {"n_first": len(data)}
-            for tx in data:
+            rec = {"between": 0}
+            for tx in res.get("data") or []:  # newest first, walking back from the first launch
                 ntx = from_rpc_json(tx)
-                if any(k == "create" for k, _, _ in pump_events(ntx)):
-                    rec["txs_before_create"] = data.index(tx)
+                if ntx.slot > first_slot[creator] or any(k == "create" for k, _, _ in pump_events(ntx)):
+                    continue
+                src = funding_source(ntx, creator)
+                if src and src[1] >= 100_000_000:
+                    i = ntx.keys.index(creator)
+                    rec.update(funder=src[0], lamports=src[1], t=ntx.block_time, slot=ntx.slot,
+                               fresh=ntx.pre_balances[i] == 0)
                     break
-                inb = inbound_transfers(ntx, creator)
-                if inb and "funder" not in rec:
-                    rec.update(funder=inb[0][0], lamports=inb[0][1], t=ntx.block_time)
+                rec["between"] += 1
             fund[creator] = rec
 
         await _gather_limited([trace(c) for c in {l["user"] for l in pre}], a.concurrency)
         fp.write_text(json.dumps(fund))
-        cands = [l for l in pre if fund.get(l["user"], {}).get("txs_before_create", 99) <= 2
-                 and fund.get(l["user"], {}).get("funder") not in KNOWN_PLATFORMS]
+        cands = [l for l in pre if fund.get(l["user"], {}).get("fresh") and fund[l["user"]]["between"] <= 2
+                 and fund[l["user"]]["funder"] not in KNOWN_PLATFORMS]
         print(f"[2] {len(cands)} candidate launches by fresh creators", flush=True)
 
         # 4 tapes
@@ -138,7 +148,7 @@ async def run(a):
         ins.sort(key=lambda x: -(x[1].get("mean") or -9))
         print(f"[5] {len(ins)} funders with >= {a.min_launches} candidate launches; in-sample:", flush=True)
         for f, st, items in ins[:15]:
-            print(f"     {f} {st}", flush=True)
+            print(f"     {f} {st} first={_stats([x[1] for x in items if x[2]])}", flush=True)
     # 6 out-of-sample for the in-sample positive ones
     results = []
     from .operator_history import run as op_run
@@ -157,11 +167,7 @@ async def run(a):
         rep = json.loads((od / "report.json").read_text())
         L = sorted([json.loads(x) for x in (od / "launches.jsonl").read_text().splitlines() if x.strip()],
                    key=lambda l: l["slot"])
-        seen, first_mints = set(), set()
-        for l in L:
-            if l["user"] not in seen:
-                first_mints.add(l["mint"])
-            seen.add(l["user"])
+        first_mints = {l["mint"] for l in L if l.get("first_after_funding")}
         k = "slot+2_end|30|60"
         # strictly out-of-sample: only launches before the discovery window
         oos = [d for d in rep["launches"] if k in d["sims"] and (d.get("t") or now) < since]

@@ -55,11 +55,15 @@ async def run(args):
     async with RPC(eps, args.rps, concurrency=args.concurrency) as rpc:
         txs = await gtfa(rpc, args.funder, since)
         recips: dict[str, dict] = {}
+        fundings: dict[str, list] = {}
         for tx in txs:
             ntx = from_rpc_json(tx)
             for to, lam in balance_recipients(ntx, args.funder, int(args.min_sol * 1e9)):
                 r = recips.setdefault(to, {"to": to, "lamports": lam, "t": ntx.block_time, "slot": ntx.slot, "n": 0})
                 r["n"] += 1
+                i = ntx.keys.index(to)
+                fundings.setdefault(to, []).append([ntx.slot, ntx.block_time, lam, ntx.pre_balances[i]])
+        (out / "fundings.json").write_text(json.dumps(fundings))
         print(f"[op] {len(txs)} funder txs, {len(recips)} recipients >= {args.min_sol} SOL", flush=True)
 
         launches: list[dict] = []
@@ -80,6 +84,9 @@ async def run(args):
 
         await _gather_limited([scan_recipient(r) for r in recips.values()], args.concurrency)
         launches.sort(key=lambda l: l["slot"])
+        firsts = first_after_funding(launches, fundings)
+        for l in launches:
+            l["first_after_funding"] = l["mint"] in firsts
         with (out / "launches.jsonl").open("w") as f:
             for l in launches:
                 f.write(json.dumps(l) + "\n")
@@ -110,6 +117,23 @@ async def run(args):
     print(json.dumps(report["summary"], indent=1))
 
 
+def first_after_funding(launches: list[dict], fundings: dict[str, list]) -> set[str]:
+    """Mints that are their creator's first launch after its latest funding.
+
+    This is the live engine's "first launch": a recycled wallet (drained to 0, funded again later)
+    starts a new count at each funding; top-ups (balance not 0 when funded) do not.
+    fundings: creator -> [[slot, block_time, lamports, pre_balance], ...]."""
+    last: dict[str, int] = {}
+    out = set()
+    for l in sorted(launches, key=lambda l: (l["slot"], l.get("tx_index") or 0)):
+        u = l["user"]
+        fs = [f[0] for f in fundings.get(u, []) if f[0] <= l["slot"] and f[3] == 0]
+        if fs and (u not in last or last[u] < max(fs)):
+            out.add(l["mint"])
+        last[u] = l["slot"]
+    return out
+
+
 def evaluate_dir(out: Path, launches: list[dict], configs=None) -> dict:
     configs = configs or [("slot+1_end", 30, 60), ("slot+1_end", 30, 180), ("slot+2_end", 30, 60),
                           ("slot+1_end", 50, 180), ("slot+1_end", 100, 180), ("slot+3_end", 30, 60)]
@@ -124,6 +148,7 @@ def evaluate_dir(out: Path, launches: list[dict], configs=None) -> dict:
         d = describe(t)
         d["t"] = l["block_time"]
         d["creator"] = l["user"]
+        d["first"] = l.get("first_after_funding")
         d["sims"] = {}
         for pos, tp, hold in configs:
             r = simulate(t, SimParams(position=pos, tp_pct=tp, max_hold_s=hold, size_sol=0.25))
@@ -137,6 +162,11 @@ def evaluate_dir(out: Path, launches: list[dict], configs=None) -> dict:
         if v:
             summary[k] = {"n": len(v), "mean": round(statistics.fmean(v), 4), "median": round(statistics.median(v), 4),
                           "win": round(sum(1 for x in v if x > 0) / len(v), 3)}
+        v = [d["sims"][k] for d in per if k in d["sims"] and d.get("first")]
+        if v:
+            summary[k + "|first"] = {"n": len(v), "mean": round(statistics.fmean(v), 4),
+                                     "median": round(statistics.median(v), 4),
+                                     "win": round(sum(1 for x in v if x > 0) / len(v), 3)}
     return {"summary": summary, "launches": per}
 
 

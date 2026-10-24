@@ -99,6 +99,27 @@ def inbound_transfers(ntx: NormTx, account: str) -> list[tuple[str, int]]:
     return sorted(agg.items(), key=lambda kv: -kv[1])
 
 
+def funding_source(ntx: NormTx, account: str) -> tuple[str, int] | None:
+    """Who paid for `account`'s credit in this tx: the largest net SOL loser.
+
+    Temp accounts that are created and closed inside the tx net to ~0, so routing through
+    them (common for operators hiding the link) still resolves to the real paying wallet."""
+    if account not in ntx.keys or not ntx.pre_balances:
+        return None
+    i = ntx.keys.index(account)
+    gain = ntx.post_balances[i] - ntx.pre_balances[i]
+    if gain <= 0:
+        return None
+    best, best_loss = None, 0
+    for j, k in enumerate(ntx.keys):
+        if j == i or j >= len(ntx.pre_balances):
+            continue
+        loss = ntx.pre_balances[j] - ntx.post_balances[j]
+        if loss > best_loss:
+            best, best_loss = k, loss
+    return (best, gain) if best else None
+
+
 def balance_recipients(ntx: NormTx, source: str, min_lamports: int = 0) -> list[tuple[str, int]]:
     """Accounts credited in a tx where `source` lost SOL (robust to routing through
     temp accounts / programs: uses pre/post balances, not transfer instructions)."""

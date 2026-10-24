@@ -43,7 +43,8 @@ grep -E "launch |paper sim|BUY|SELL|creator .* funded" data/engine.log | tail
 ```
 
 Expected:
-- `bootstrap DJTDXMc7: N creators` with N > 0. If 0, the operator went quiet; run discovery (Phase 4) before going live.
+- `bootstrap DJTDXMc7: N creators funded in the last 24h` with N > 0. If 0, the operator went quiet; run discovery (Phase 4) before going live.
+- `creators: N watched, M already launched since their latest funding`. Launch counts start at each creator's latest funding, so a creator with 0 here has its first launch still ahead.
 - Streams `connected`, `reconnects` low, `last_msg_age_s` < 5.
 - Within an hour, `launch ... op=djtd ... -> paper paper_mode`, each followed by `paper sim ... sim_ok`. The operator launches about 3/hour; first launches about 1/hour.
 
@@ -71,6 +72,7 @@ Every 2 hours run `python -m rugsnipe.cli report --config config/config.toml --h
 | trigger→send | `trigger->sent med` | < 50 ms | box/CPU problem |
 | realized return | `closed positions mean ret` | consistent with the learner's `sim_on_filled` | gap > 10 pts ⇒ the model is wrong for us: stop |
 | adverse selection | learner `adverse_selection_gap` | < 0.10 | > 0.15 ⇒ auto-disabled; do not re-enable |
+| first vs repeat | learner `sim_slot3` vs `sim_repeat_slot3` | first launches ahead | if repeats beat first launches with n ≥ 10 each, the first-launch rule is not what carries the edge: do not scale, re-assess |
 | exits | `exit tp / time / dev_dump` | tp ~60–75 %; no stuck `selling` | stuck ⇒ check routes and `data/engine.log` |
 
 Kill criteria (stop and re-assess; most are automatic):
@@ -108,12 +110,14 @@ For a candidate with out-of-sample `oos_first.mean ≥ 0.05`, `n ≥ 20` and `t 
 
 - **Operator schedule.** `djtd` works in sessions, roughly **05:00–11:00 and 13:00–21:00 UTC**,
   with 1.5–3 hour gaps between them. Over 72 hours its sessions produced 8–39 launches each.
-  It was idle from 11:17 UTC on 2026-10-24 while this repo was built.
+  On 2026-10-24 its morning session ran 07:51–11:19 UTC: 12 creators, about 28 launches.
+  - At 14:19–14:30 the bank moved 300 SOL out through its cash-out route (bank → `7Pq8Lhv3…` → `55jakZLs…`). It did the same between sessions on 10-22, so this is profit-taking, not an exit.
   - The operator's money path: bank `Df8CJQR7…` → relay `DJTDXMc7…` → fresh creator. The creator launches and sends its proceeds back through the relay to the bank.
   - Profits per creator ranged from +13 to +58 SOL, so this operator is still active and motivated.
   - Both the bank and the relay are watched. A new relay is picked up automatically, because a bank → fresh wallet transfer of 10–40 SOL registers the wallet and `follow_chain` follows its fundings.
   - If neither the bank nor the relay moves for more than 24 hours, treat the operator as gone and promote a discovery candidate instead.
-- **Restarts are safe.** Watched creators, child funders and launch counts are restored from SQLite; creators funded while the engine was down are recovered from the funder's history at startup.
+- **Recycled wallets.** `djtd` creators are aged wallets drained to 0 and funded again later. The log shows `creator X re-funded by ...`, and that creator's next launch counts as a first launch again, which is the rule the edge was measured on. Top-ups (wallet not at 0) never re-arm a creator.
+- **Restarts are safe.** Watched creators, child funders and launch counts are restored from SQLite. At startup every creator's launches are recounted on-chain from its latest funding. Creators funded or re-funded while the engine was down are recovered from the funder's history.
 - **Operator rotation.** A watched funder that moves ≥ 40 SOL (`follow_child_funders_min_sol`) to a fresh wallet makes that wallet a child funder automatically. Creators that forward funds to a fresh wallet (`follow_chain`) pass the identity on.
 - **Costs.**
   - Buys: 0.0002 SOL priority + 0.00001 SOL tip.

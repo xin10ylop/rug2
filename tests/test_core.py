@@ -121,10 +121,10 @@ def test_buy_and_sell_tx_build():
     assert len(bytes(btx)) < 1232 and len(bytes(stx)) < 1232
 
 
-def _engine(tmp, me):
+def _engine(tmp, me, **op):
     from rugsnipe.config import Config
     from rugsnipe.live.engine import Engine
-    ops = {"operators": [{"id": "t", "funders": [], "policy": {"enabled": True}}]}
+    ops = {"operators": [{"id": "t", "funders": [], "policy": {"enabled": True}, **op}]}
     Path(tmp, "ops.json").write_text(json.dumps(ops))
     cfg = Config(rpc_url="http://127.0.0.1:1", grpc_url="http://127.0.0.1:1", grpc_token=None,
                  keypair_path=os.path.join(tmp, "none.json"), db_path=os.path.join(tmp, "db.sqlite"),
@@ -182,3 +182,70 @@ def test_burst_of_creates_counts_launch_numbers_synchronously():
             await asyncio.sleep(0)
         asyncio.run(go())
     assert seen == [0, 1]
+
+
+def test_funding_source_sees_through_temp_account_routing():
+    from rugsnipe.research.launches import funding_source
+    tx = load("funding_djtd.json")
+    ntx = from_rpc_json(tx)
+    creator, lam = tx["_expected_fresh_recipients"][0]
+    src = funding_source(ntx, creator)
+    assert src[0] == "DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8" and src[1] == lam
+
+
+def test_refunded_creator_is_rearmed_and_survives_restart():
+    """Operators recycle wallets: each new funding starts a new 'first launch', older fundings never do."""
+    import copy
+    tx = load("funding_djtd.json")
+    ntx = from_rpc_json(tx)
+    relay = "DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8"
+    creator, _ = tx["_expected_fresh_recipients"][0]
+    later, earlier = copy.deepcopy(ntx), copy.deepcopy(ntx)
+    later.slot, earlier.slot = ntx.slot + 1000, ntx.slot - 1000
+    with tempfile.TemporaryDirectory() as tmp:
+        eng = _engine(tmp, "me", funders=[relay], fund_min_sol=0.5, fund_max_sol=100)
+        assert eng._scan_funding(ntx, relay, "t") == 1
+        ci = eng.book.creators[creator]
+        assert ci.fund_slot == ntx.slot and ci.launches == 0
+        ci.launches = ci.seen = 2  # it launched twice
+        assert eng._scan_funding(ntx, relay, "t") == 0 and ci.launches == 2  # same funding seen again
+        assert eng._scan_funding(earlier, relay, "t") == 0 and ci.launches == 2  # older funding
+        assert eng._scan_funding(later, relay, "t") == 1  # funded again: next launch is a first launch
+        assert ci.fund_slot == later.slot and ci.launches == ci.seen == 0
+        eng.store.bump_launches(creator)
+        eng.store.commit()
+        eng2 = _engine(tmp, "me", funders=[relay], fund_min_sol=0.5, fund_max_sol=100)
+        eng2._restore()
+        ci2 = eng2.book.creators[creator]
+        assert ci2.fund_slot == later.slot and ci2.launches == 1 and ci2.expires > ci2.fund_time
+
+
+def test_first_after_funding_matches_engine_rule():
+    from rugsnipe.research.operator_history import first_after_funding
+    L = [{"mint": m, "user": u, "slot": s, "tx_index": i} for m, u, s, i in [
+        ("a1", "A", 110, 0), ("a2", "A", 120, 0), ("a3", "A", 210, 1), ("a4", "A", 210, 5),
+        ("b1", "B", 50, 0), ("b2", "B", 70, 0)]]
+    F = {"A": [[100, 0, 1, 0], [115, 0, 1, 5_000_000], [200, 0, 1, 0]], "B": [[60, 0, 1, 0]]}  # 115: top-up
+    assert first_after_funding(L, F) == {"a1", "a3", "b2"}
+
+
+def test_learner_scores_repeat_launches_as_control_group():
+    import shutil
+    import time as _t
+    from rugsnipe.live.learner import run_learner
+    launch = load("launch_djtd.json")
+    with tempfile.TemporaryDirectory() as tmp:
+        eng = _engine(tmp, "me")
+        tdir = Path(tmp, "tapes")
+        tdir.mkdir()
+        for mint, decision, reason in [("first111", "paper", None), ("repeat11", "skip", "not_first_launch(1)")]:
+            shutil.copy(FX / "tape_djtd.jsonl", tdir / f"{mint}.jsonl")
+            eng.store.upsert_launch(mint, slot=launch["slot"], tx_index=launch["tx_index"], creator=launch["user"],
+                                    operator="t", block_time=launch["block_time"], t_deshred=_t.time() - 3600,
+                                    decision=decision, reason=reason)
+        eng.store.commit()
+        rep = asyncio.run(run_learner(eng.store, eng.book, None, tape_dir=str(tdir), apply=False,
+                                      out_path=os.path.join(tmp, "l.json")))
+    st = rep["operators"]["t"]
+    assert st["eligible"] == 1 and st["sim_slot3"]["n"] == 1
+    assert st["sim_repeat_slot3"]["n"] == 1 and st["sim_repeat_slot3"]["mean"] == st["sim_slot3"]["mean"]

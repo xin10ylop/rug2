@@ -7,6 +7,10 @@ filters ("eligible": traded, paper, shadow or risk-blocked) the learner:
   3. compares with what actually happened to our own orders on the same launches.
 Outputs data/learner.json and (for policy.auto operators) enables/disables trading.
 
+Repeat launches (skipped as not_first_launch) are simulated too, as a control group
+(sim_repeat_slot3): if they stop doing worse than first launches, the first-launch rule
+is no longer what carries the edge. They never influence enable/disable.
+
 The key check against the old failure mode ("the dry run scores races we never
 win"): simulated EV on launches we *filled* vs launches we *missed* (expired /
 guard-failed). If fills are systematically the worse launches, the edge is not
@@ -72,7 +76,8 @@ async def run_learner(store: Store, book: OperatorBook, rpc: RPC, tape_dir: str 
     tdir.mkdir(parents=True, exist_ok=True)
     rows = store.q("SELECT mint, operator, slot, tx_index, creator, block_time, decision, reason, sig, "
                    "creator_fee_bps, t_deshred, t_processed FROM launches WHERE operator IS NOT NULL AND "
-                   "decision IN ('buy','paper','shadow','blocked') AND COALESCE(t_deshred, t_processed) > ?", (since,))
+                   "(decision IN ('buy','paper','shadow','blocked') OR reason LIKE 'not_first_launch%') "
+                   "AND COALESCE(t_deshred, t_processed) > ?", (since,))
     report = {"t": time.time(), "operators": {}}
     by_op: dict[str, list] = {}
     for (mint, op, slot, txi, creator, bt, decision, reason, sig, cfee, td, tp) in rows:
@@ -99,8 +104,14 @@ async def run_learner(store: Store, book: OperatorBook, rpc: RPC, tape_dir: str 
             continue
         pol = op.policy
         sims = {"slot+1_end": [], "slot+3_end": []}
-        filled_sim, missed_sim, realized = [], [], []
+        filled_sim, missed_sim, realized, repeat_sim = [], [], [], []
         for mint, decision, reason, tape in items:
+            if (reason or "").startswith("not_first_launch"):
+                r = simulate(tape, SimParams(size_sol=pol.size_sol, position="slot+3_end", tp_pct=pol.tp_pct,
+                                             max_hold_s=pol.max_hold_s, sl_pct=pol.sl_pct))
+                if r.entered:
+                    repeat_sim.append(r.ret)
+                continue
             for pos in sims:
                 r = simulate(tape, SimParams(size_sol=pol.size_sol, position=pos, tp_pct=pol.tp_pct,
                                              max_hold_s=pol.max_hold_s, sl_pct=pol.sl_pct))
@@ -119,8 +130,11 @@ async def run_learner(store: Store, book: OperatorBook, rpc: RPC, tape_dir: str 
                         realized.append(prow[0][0] / prow[0][1])
                 elif status in ("failed", "expired", "sent"):
                     missed_sim.append(s3.ret)
-        st = {"eligible": len(items), "sim_slot1": _stats(sims["slot+1_end"]), "sim_slot3": _stats(sims["slot+3_end"]),
-              "sim_on_filled": _stats(filled_sim), "sim_on_missed": _stats(missed_sim), "realized": _stats(realized)}
+        n_repeat = sum(1 for _, _, reason, _ in items if (reason or "").startswith("not_first_launch"))
+        st = {"eligible": len(items) - n_repeat, "sim_slot1": _stats(sims["slot+1_end"]),
+              "sim_slot3": _stats(sims["slot+3_end"]), "sim_on_filled": _stats(filled_sim),
+              "sim_on_missed": _stats(missed_sim), "realized": _stats(realized),
+              "sim_repeat_slot3": _stats(repeat_sim)}
         # adverse selection flag: missed launches clearly better than filled ones
         if len(filled_sim) >= 5 and len(missed_sim) >= 5:
             st["adverse_selection_gap"] = round(statistics.fmean(missed_sim) - statistics.fmean(filled_sim), 4)

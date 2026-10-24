@@ -85,15 +85,17 @@ class Store:
                f"ON CONFLICT(mint) DO UPDATE SET {upd}", vals)
 
     def add_funding(self, creator: str, funder: str, operator: str, lamports: int, slot: int, fresh: bool, sig: str,
-                    ttl_s: float):
-        now = time.time()
+                    t: float, ttl_s: float):
+        """One row per creator: its latest funding (t = funding time). A new funding restarts the launch count."""
         self.x("INSERT INTO fundings(creator,funder,operator,lamports,slot,t,fresh,sig,launches,expires) "
-               "VALUES(?,?,?,?,?,?,?,?,0,?) ON CONFLICT(creator) DO UPDATE SET expires=excluded.expires",
-               (creator, funder, operator, lamports, slot, now, int(fresh), sig, now + ttl_s))
+               "VALUES(?,?,?,?,?,?,?,?,0,?) ON CONFLICT(creator) DO UPDATE SET funder=excluded.funder, "
+               "operator=excluded.operator, lamports=excluded.lamports, slot=excluded.slot, t=excluded.t, "
+               "fresh=excluded.fresh, sig=excluded.sig, launches=0, expires=excluded.expires",
+               (creator, funder, operator, lamports, slot, t, int(fresh), sig, t + ttl_s))
 
     def active_creators(self) -> list[tuple]:
-        return self.q("SELECT creator, operator, launches, funder, lamports FROM fundings WHERE expires > ?",
-                      (time.time(),))
+        return self.q("SELECT creator, operator, launches, funder, lamports, slot, t, expires FROM fundings "
+                      "WHERE expires > ?", (time.time(),))
 
     def bump_launches(self, creator: str):
         self.x("UPDATE fundings SET launches = launches + 1 WHERE creator=?", (creator,))

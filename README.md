@@ -41,32 +41,47 @@ Following early snipers (entering after their buys, no lookahead) is also negati
 ## 2. The edge that survived validation
 
 The one operator that holds up we call `djtd`.
-- **Funding:** a relay wallet, `DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8`, funds fresh creator wallets with 4–24 SOL. Funding is routed through a temporary account, so it is attributed by balance changes, not transfer instructions.
+- **Funding:** a relay wallet, `DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8`, funds creator wallets with 4–24 SOL. Funding is routed through a temporary account, so it is attributed by balance changes, not transfer instructions.
+- **Recycled wallets:** the creators are aged wallets (first used in 2024), drained to 0 SOL between uses and funded again later. "Fresh" therefore means *0 SOL at the funding*, not a new address. A filter on wallet age or history misses this operator completely; the first discovery runs did exactly that.
 - **Behind the relay:** a bank wallet, `Df8CJQR7fUTYAQSQwtsgUDs5b6JWNULzwhJJXDCJkdya`.
   - It funds the relay, receives each creator's proceeds back (+13 to +58 SOL per creator), and seeds about 100 pump wallets with ~2 SOL each.
   - The engine watches both the bank and the relay, so a relay rotation is followed automatically.
-- **Launch pattern:** each creator fires 1–18 tokens on trending narratives, with about 10 SOL dev buys.
+- **Launch pattern:** each funding is followed by 1–7 tokens on trending narratives, with about 10 SOL dev buys. The first launch comes 14 slots or more after the funding (median ~90), so the engine always knows the creator in time.
 - **Mechanics:** legacy `create` (SPL Token) + `extend_account` + `buy`, via several launch tools.
+- **Second pattern, not traded:** on 10-23 it also ran a no-dev-buy variant (1–5 SOL fundings). It was positive too (+13.9 %, n = 24, t = 1.8), but it lies outside the configured profile (dev buy 8–14 SOL) and has not reappeared since.
 
-| set (72 h, 2026-10-21..24) | n | mean / trade (all costs) | median | win | t |
-|---|---|---|---|---|---|
-| all launches, entry end of slot+1, TP +30 %, hold 60 s | 241 | **+3.8 %** | +28.6 % | 65 % | 1.5 |
-| **first launch of each creator**, entry end of slot+1 | 64 | **+10.9 %** | — | 78 % | **2.4** |
-| first launches, entry end of slot+3 / slot+5 | 64 | +11.0 % / +11.0 % | | | 2.4 |
-| first launches, entry end of slot+10 | 64 | +7.6 % | | | 1.7 |
+"First launch" means **the first launch after the creator's latest funding**. That is exactly what the engine trades: a recycled wallet funded again from 0 starts a new count; a top-up does not.
+
+| set (72 h to 2026-10-24 13:27 UTC; TP +30 %, hold 60 s, all costs) | n | mean / trade | win | t |
+|---|---|---|---|---|
+| all launches, entry end of slot+1 | 241 | +3.8 % | 65 % | 1.5 |
+| **first launch after each funding**, entry end of slot+1 | 79 | **+12.9 %** | 80 % | **3.3** |
+| same, entry end of slot+3 / slot+5 | 79 | +13.1 % / +13.1 % | 80 % | 3.3 |
+| same, entry end of slot+10 | 79 | +10.2 % | 76 % | 2.6 |
+| same, inside the profile's ranges (funding 2–30 SOL, dev buy 8–14 SOL) | 53 | +12.2 % | 75 % | 2.6 |
+| repeat launches (2nd and later after a funding), slot+1 / slot+10 | 162 | −0.6 % / −4.4 % | 58 % | −0.2 |
+| **discovery pipeline, automatic, strictly out-of-sample** (the 72 h before 10-24 02:17), slot+2 | 68 | **+13.7 %** | 81 % | **3.25** |
+
+First launches by half-day session:
+
+| 10-22 AM | 10-22 PM | 10-23 AM | 10-23 PM | 10-24 AM |
+|---|---|---|---|---|
+| −18 % (n = 9) | +26 % (16) | +29 % (14) | +9.7 % (29) | +5.2 % (10) |
+
+The last three sessions are lower each time. That may be noise or the edge decaying, and 24 hours of live data will not settle which. The live system re-checks it continuously (section 3, point 4) and has hard kill criteria (RUNBOOK).
 
 Robustness checks:
 - **Parameters:** the TP 15–75 % × hold 20–180 s surface is positive everywhere (+2.5 % … +11.8 %); +30 % / 60–90 s is on a plateau, not a spike.
 - **Size:** best at 0.25–0.5 SOL (≈ +11 %). At 0.05 SOL fixed fees eat it (+6.7 %); at 1 SOL our own impact costs ~3 points (+8.3 %).
 - **Price guard:** median price drift in the first 3 blocks is 3.9 % (p95 8.9 %), so a +15 % guard rarely binds. Winners do not drift more than losers (no adverse selection through the guard). The guard blocks more losers (8 %) than winners (1 %).
-- **Regime:** 12-hour buckets ranged **−14 % … +29 %**. The engine re-validates continuously and auto-disables (section 5).
+- **Regime:** sessions range from −18 % to +29 % (table above). The engine re-validates continuously and auto-disables (section 5).
 
-**Caveat.** The "first launch" split was found after looking at the data. It has a mechanism: follow-up launches are duplicates competing for the same narrative. But treat it as a hypothesis to confirm live at small size, not a proven law.
+**Caveat.** The "first launch" split was found after looking at the data. It has a mechanism: follow-up launches are duplicates competing for the same narrative. It has since passed a stricter test: the discovery pipeline found the operator and the rule on its own, out of sample (t = 3.25). But on 10-24 morning, repeats (+18.7 %, n = 16) beat first launches (+5.2 %, n = 10). So the learner now scores repeat launches live as a control group (`sim_repeat_slot3`). Treat the rule as well supported, not proven.
 
 Expected economics if it holds:
-- Volume: ~20 first launches/day.
-- At 0.25 SOL and +10 %: about **+0.5 SOL/day**, with a daily standard deviation around ±0.4 SOL.
-- If it decays to the all-launch level (+4 %): about +0.2 SOL/day.
+- Volume: ~18 first launches/day inside the profile (53 in 72 h).
+- At 0.25 SOL and +12 %: about **+0.5 SOL/day**, with a daily standard deviation around ±0.4 SOL.
+- At the last session's level (+5 %): about +0.2 SOL/day.
 - This is a real but modest edge. The way to grow it is the discovery pipeline (section 6) finding more operators like this one, not raising size.
 
 ## 3. Why this does not repeat the "dry run scores races we never win" failure
@@ -90,6 +105,9 @@ that impossible to miss:
    - If the missed ones are systematically the good ones (`adverse_selection_gap` > 15 %), the operator is disabled.
    - This is the exact check that would have caught the previous strategy within a day.
 5. **Adverse selection by rivals.** Within `djtd`, winners and losers have the same number of early outside snipers (median 5 vs 5). The sniper race does not carry the outcome here.
+6. **The live rule is the measured rule.** The engine counts launches from each creator's latest funding, both live and when it rebuilds state at start-up, and re-arms recycled wallets. That is the same definition as the tables above, checked by tests on a real djtd funding.
+   - An earlier version counted launches over the last 24–48 hours instead. It would have skipped first launches by recycled wallets, which are the best group (+21.7 %, n = 15), and still traded everything else.
+   - That is a smaller version of the "dry run scores trades we never take" problem, now removed.
 
 ## 4. Architecture
 
@@ -159,9 +177,12 @@ python -m rugsnipe.research.pipeline --hours 8 --out data/discovery/$(date +%H%M
 
 The pipeline:
 - pulls every launch in the window (100 creates per call)
-- traces fresh creators' funding by balance changes, so routed funding is still attributed
-- simulates the candidate class (fresh creator, ≥3 SOL dev buy, SOL quote) at realistic entries
-- re-validates in-sample-positive funders on the **prior** 72 hours, strictly out-of-sample
+- finds the funding right before each creator's first launch, by balance changes, so routed funding is still attributed
+- counts a creator as fresh when it held 0 SOL at that funding, as the engine does; recycled aged wallets count
+- simulates the candidate class (fresh at funding, ≥3 SOL dev buy, SOL quote) at realistic entries
+- re-validates in-sample-positive funders on the **prior** 72 hours, strictly out-of-sample, on first launches after each funding
+
+On the 12 hours to 10-24 14:17 UTC it ranks `djtd` first in-sample (n = 28, +11.9 %) and reproduces its edge out-of-sample (table in section 2). Before the freshness fix the same run did not see `djtd` at all.
 
 It writes `candidates.json` with ready-to-paste operator profiles. Promote a candidate to paper
 first, and to live only when its out-of-sample first-launch mean is above +5 % with n ≥ 20 and t ≥ 2.

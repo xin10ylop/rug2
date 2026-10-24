@@ -152,12 +152,11 @@ class Engine:
             await self.rpc.__aexit__(None, None, None)
 
     def _restore(self):
-        for creator, op, launches, funder, lam in self.store.active_creators():
-            if op in self.book.ops:
-                self.book.add_creator(creator, op, funder, lam)
-                self.book.creators[creator].launches = launches
-                self.book.creators[creator].seen = launches
-        self._restored = [c for c in self.book.creators if self.book.creators[c].funder != "static"]
+        for creator, op, launches, funder, lam, slot, t, expires in self.store.active_creators():
+            if op in self.book.ops and self.book.add_creator(creator, op, funder, lam, slot or 0, t or 0.0):
+                ci = self.book.creators[creator]
+                ci.launches = ci.seen = launches
+                ci.expires = expires
         for addr, op, role in self.store.q("SELECT addr, operator, role FROM funders"):
             if op in self.book.ops:
                 self.book.add_funder(addr, op, role)
@@ -186,42 +185,39 @@ class Engine:
                     continue
             n = 0
             from ..decode import from_rpc_json
-            before = set(self.book.creators)
-            for tx in data:
+            for tx in data:  # newest first: a creator's latest funding is the one that registers it
                 ntx = from_rpc_json(tx)
                 n += self._scan_funding(ntx, addr, op_id, bootstrap=True)
-            new = [c for c in self.book.creators if c not in before]
-            # launches made before start-up must count, or a repeat launch would look like a first launch
-            counts = await asyncio.gather(*[self._count_launches(c, since) for c in new])
-            for c, k in zip(new, counts):
-                self.book.creators[c].launches = self.book.creators[c].seen = k
-                self.store.x("UPDATE fundings SET launches=? WHERE creator=?", (k, c))
-            log.info("bootstrap %s: %d creators (%d already launched)", addr[:8], n, sum(1 for k in counts if k))
-        # creators restored from the DB may have launched while the engine was down
-        restored = getattr(self, "_restored", [])
-        if restored:
-            since = int(time.time() - 48 * 3600)
-            counts = await asyncio.gather(*[self._count_launches(c, since) for c in restored])
-            for c, k in zip(restored, counts):
-                ci = self.book.creators.get(c)
-                if ci and k > ci.launches:
-                    ci.launches = ci.seen = k
-                    self.store.x("UPDATE fundings SET launches=? WHERE creator=?", (k, c))
+            log.info("bootstrap %s: %d creators funded in the last %.0fh", addr[:8], n, op.creator_ttl_h)
+        # launches made since each creator's latest funding (before start-up, or while the engine was down)
+        # must count, or a repeat launch would look like a first launch
+        live = [ci for ci in self.book.creators.values() if ci.funder != "static"]
+        counts = await asyncio.gather(*[self._count_launches(ci) for ci in live])
+        for ci, k in zip(live, counts):
+            if k != ci.launches:
+                ci.launches = ci.seen = k
+                self.store.x("UPDATE fundings SET launches=? WHERE creator=?", (k, ci.creator))
+        log.info("creators: %d watched, %d already launched since their latest funding", len(live),
+                 sum(1 for k in counts if k))
         self.store.commit()
 
-    async def _count_launches(self, creator: str, since: int) -> int:
+    async def _count_launches(self, ci) -> int:
         from ..decode import from_rpc_json
+        since = int(ci.fund_time) - 120 if ci.fund_time else int(time.time() - 48 * 3600)
         try:
-            res = await self.rpc.call("getTransactionsForAddress", [creator, {
+            res = await self.rpc.call("getTransactionsForAddress", [ci.creator, {
                 "transactionDetails": "full", "sortOrder": "asc", "limit": 100, "encoding": "json",
                 "maxSupportedTransactionVersion": 1, "commitment": "confirmed",
                 "filters": {"blockTime": {"gte": since}, "status": "succeeded"}}])
         except Exception:
-            return 1  # unknown history: be conservative, never treat as first launch
+            return max(ci.launches, 1)  # unknown history: be conservative, never treat as first launch
         k = 0
         for tx in res.get("data") or []:
-            for kind, e, _ in pump_events(from_rpc_json(tx)):
-                if kind == "create" and e.get("user") == creator:
+            ntx = from_rpc_json(tx)
+            if ntx.slot < ci.fund_slot:
+                continue
+            for kind, e, _ in pump_events(ntx):
+                if kind == "create" and e.get("user") == ci.creator:
                     k += 1
         return k
 
@@ -491,7 +487,7 @@ class Engine:
             (op.fund_min_sol, op.fund_max_sol)
         n = 0
         for to, lam in balance_recipients(ntx, source, int(lo * LAMPORTS)):
-            if to in self.book.creators or to in self.book.funder_to_op or to == self.me:
+            if to in self.book.funder_to_op or to == self.me:
                 continue
             i = ntx.keys.index(to)
             fresh = i < len(ntx.pre_balances) and ntx.pre_balances[i] == 0
@@ -506,11 +502,16 @@ class Engine:
                 continue
             if op.fresh_only and not fresh:
                 continue
-            if self.book.add_creator(to, op_id, source, lam):
-                self.store.add_funding(to, source, op_id, lam, ntx.slot, fresh, ntx.signature, op.creator_ttl_h * 3600)
+            known = to in self.book.creators
+            if known and not fresh:
+                continue  # a top-up, not a recycled (drained to 0) wallet being funded again
+            t_fund = ntx.block_time or time.time()
+            if self.book.add_creator(to, op_id, source, lam, ntx.slot, t_fund):
+                self.store.add_funding(to, source, op_id, lam, ntx.slot, fresh, ntx.signature, t_fund,
+                                       op.creator_ttl_h * 3600)
                 if not bootstrap:
-                    log.info("creator %s funded by %s %.3f SOL (%s) op=%s", to[:8], source[:8], lam / LAMPORTS,
-                             "chain" if chain else "funder", op_id)
+                    log.info("creator %s %s by %s %.3f SOL (%s) op=%s", to[:8], "re-funded" if known else "funded",
+                             source[:8], lam / LAMPORTS, "chain" if chain else "funder", op_id)
                 n += 1
         return n
 
