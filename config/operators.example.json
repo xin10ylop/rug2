@@ -3,13 +3,16 @@
  "operators": [
   {
    "id": "djtd",
-   "label": "DJTDXMc7 heavy narrative deployer (funds fresh creators 4-19 SOL, ~10 SOL dev buys)",
-   "funders": ["DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8"],
+   "label": "djtd: bank Df8CJQR7 -> relay DJTDXMc7 -> fresh creators (4-24 SOL), ~10 SOL dev buys, narrative launches",
+   "funders": [
+    "DJTDXMc7BuN4t2PPTEnfmAPSJrwMgsEXrvdbWbxkvga8",
+    "Df8CJQR7fUTYAQSQwtsgUDs5b6JWNULzwhJJXDCJkdya"
+   ],
    "fund_min_sol": 2.0,
    "fund_max_sol": 30.0,
    "fresh_only": true,
    "follow_chain": true,
-   "follow_child_funders_min_sol": 40.0,
+   "follow_child_funders_min_sol": 45.0,
    "dev_buy_min_sol": 8.0,
    "dev_buy_max_sol": 14.0,
    "allow_mayhem": false,
@@ -19,7 +22,7 @@
     "enabled": false,
     "size_sol": 0.1,
     "tp_pct": 30.0,
-    "max_hold_s": 60.0,
+    "max_hold_s": 90.0,
     "sl_pct": null,
     "max_entry_mcap_mult": 1.15,
     "max_slot_offset": 8,
@@ -28,7 +31,13 @@
     "auto": true,
     "min_live_ev": 0.0
    },
-   "note": "72h out-of-sample (2026-10-21..24): first launches n=64 mean +10.9%/trade t=2.4 at slot+1..+5 entry; all launches n=241 +3.8% t=1.5; 12h buckets ranged -14%..+29%. Validate live at size 0.1 before scaling."
+   "note": "72h out-of-sample (2026-10-21..24): first launches n=64 mean +10.9%/trade t=2.4 at slot+1..+5 entry; all launches n=241 +3.8% t=1.5; 12h buckets ranged -14%..+29%. Validate live at size 0.1 before scaling. Operator works in sessions (~05-11 and 13-21 UTC). Bank also seeds ~100 pump wallets with ~2 SOL (excluded by the bank's 10 SOL floor). A new relay funded by the bank is picked up as a creator and its fundings are followed via follow_chain.",
+   "funder_ranges": {
+    "Df8CJQR7fUTYAQSQwtsgUDs5b6JWNULzwhJJXDCJkdya": [
+     10.0,
+     40.0
+    ]
+   }
   }
  ]
 }

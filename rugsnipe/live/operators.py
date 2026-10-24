@@ -38,6 +38,8 @@ class Operator:
     label: str = ""
     funders: list[str] = field(default_factory=list)
     creators: list[str] = field(default_factory=list)  # static creator wallets (reused-address operators)
+    # per-funder [min_sol, max_sol] overrides, e.g. a bank that also seeds ~2 SOL pump wallets
+    funder_ranges: dict = field(default_factory=dict)
     fund_min_sol: float = 1.0
     fund_max_sol: float = 50.0
     fresh_only: bool = True

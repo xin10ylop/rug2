@@ -84,6 +84,7 @@ class Position:
     tp_pct: float = 30.0
     max_hold_s: float = 60.0
     sl_pct: Optional[float] = None
+    reconciling: bool = False
 
 
 def load_keypair(path: str) -> Keypair:
@@ -163,18 +164,27 @@ class Engine:
         for addr, op_id in list(self.book.funder_to_op.items()):
             op = self.book.ops[op_id]
             since = int(time.time() - op.creator_ttl_h * 3600)
+            data, token = [], None
             try:
-                res = await self.rpc.call("getTransactionsForAddress", [addr, {
-                    "transactionDetails": "full", "sortOrder": "desc", "limit": 100, "encoding": "json",
-                    "maxSupportedTransactionVersion": 1, "commitment": "confirmed",
-                    "filters": {"blockTime": {"gte": since}, "status": "succeeded"}}])
+                for _ in range(6):
+                    opts = {"transactionDetails": "full", "sortOrder": "desc", "limit": 100, "encoding": "json",
+                            "maxSupportedTransactionVersion": 1, "commitment": "confirmed",
+                            "filters": {"blockTime": {"gte": since}, "status": "succeeded"}}
+                    if token:
+                        opts["paginationToken"] = token
+                    res = await self.rpc.call("getTransactionsForAddress", [addr, opts])
+                    data += res.get("data") or []
+                    token = res.get("paginationToken")
+                    if not token or len(res.get("data") or []) < 100:
+                        break
             except Exception as e:
                 log.warning("bootstrap %s failed (%s) - only new fundings will be tracked", addr[:8], str(e)[:120])
-                continue
+                if not data:
+                    continue
             n = 0
             from ..decode import from_rpc_json
             before = set(self.book.creators)
-            for tx in res.get("data") or []:
+            for tx in data:
                 ntx = from_rpc_json(tx)
                 n += self._scan_funding(ntx, addr, op_id, bootstrap=True)
             new = [c for c in self.book.creators if c not in before]
@@ -459,13 +469,15 @@ class Engine:
 
     def _scan_funding(self, ntx: NormTx, source: str, op_id: str, chain: bool = False, bootstrap: bool = False) -> int:
         op = self.book.ops[op_id]
+        lo, hi = op.funder_ranges.get(source, (op.fund_min_sol, op.fund_max_sol)) if not chain else \
+            (op.fund_min_sol, op.fund_max_sol)
         n = 0
-        for to, lam in balance_recipients(ntx, source, int(op.fund_min_sol * LAMPORTS)):
+        for to, lam in balance_recipients(ntx, source, int(lo * LAMPORTS)):
             if to in self.book.creators or to in self.book.funder_to_op or to == self.me:
                 continue
             i = ntx.keys.index(to)
             fresh = i < len(ntx.pre_balances) and ntx.pre_balances[i] == 0
-            if lam > op.fund_max_sol * LAMPORTS:
+            if lam > hi * LAMPORTS:
                 if (not chain and op.follow_child_funders_min_sol and lam >= op.follow_child_funders_min_sol * LAMPORTS
                         and fresh):
                     if self.book.add_funder(to, op_id, "child"):
@@ -680,11 +692,58 @@ class Engine:
                     if tr:
                         self._check_exit(pos, tr)
                 elif pos.state == "selling" and now - pos.last_sell_t >= self.cfg.sell_retry_s:
+                    if pos.sell_attempts >= 4 and not pos.reconciling:
+                        pos.reconciling = True
+                        asyncio.get_running_loop().create_task(self._reconcile(pos, "sell"))
                     self._sell(pos, pos.exit_reason)
-                elif pos.state == "pending" and self.slot - pos.create_slot > self.cfg.buy_expire_slots + 20:
-                    pos.state = "expired"
-                    self.store.update_attempt(pos.attempt_id, status="expired")
-                    log.info("BUY expired %s (not landed)", pos.mint[:8])
+                elif (pos.state == "pending" and self.slot - pos.create_slot > self.cfg.buy_expire_slots + 20
+                      and not pos.reconciling):
+                    pos.reconciling = True
+                    asyncio.get_running_loop().create_task(self._reconcile(pos, "buy"))
+
+    async def _reconcile(self, pos: Position, side: str):
+        """The stream may miss our own transaction: ask the chain what happened."""
+        from ..decode import from_rpc_json
+        try:
+            sigs = [pos.buy_sig] if side == "buy" else pos.sell_sigs[-20:]
+            st = await self.rpc.call("getSignatureStatuses", [sigs, {"searchTransactionHistory": True}])
+            for sig, s in zip(sigs, st["value"]):
+                if s and s.get("confirmationStatus"):
+                    tx = await self.rpc.get_tx(sig, commitment="confirmed")
+                    if tx:
+                        ntx = from_rpc_json(tx)
+                        if ntx.err is None or side == "buy":
+                            log.warning("reconcile %s %s: found landed tx %s", side, pos.mint[:8], sig[:10])
+                            self._on_our_tx(ntx)
+                            if ntx.err is None:
+                                return
+            if side == "buy":
+                pos.state = "expired"
+                self.store.update_attempt(pos.attempt_id, status="expired")
+                log.info("BUY expired %s (not landed)", pos.mint[:8])
+            else:
+                from ..txbuild import ata
+                acc = ata(self.kp.pubkey(), pos.keys.mint, pos.keys.token_program)
+                r = await self.rpc.call("getTokenAccountBalance", [str(acc), {"commitment": "confirmed"}])
+                amt = int(r["value"]["amount"])
+                if amt == 0:
+                    pos.state = "closed"
+                    self.store.x("UPDATE positions SET status='closed_unreconciled', closed=? WHERE mint=?",
+                                 (time.time(), pos.mint))
+                    log.warning("reconcile %s: tokens gone but sell tx not found - marked closed", pos.mint[:8])
+                elif amt != pos.tokens:
+                    log.warning("reconcile %s: token balance %d != tracked %d - resyncing", pos.mint[:8], amt,
+                                pos.tokens)
+                    pos.tokens = amt
+        except Exception as e:
+            if "could not find account" in str(e).lower() and side == "sell":
+                pos.state = "closed"
+                self.store.x("UPDATE positions SET status='closed_unreconciled', closed=? WHERE mint=?",
+                             (time.time(), pos.mint))
+            else:
+                log.warning("reconcile %s %s failed: %s", side, pos.mint[:8], str(e)[:120])
+        finally:
+            pos.reconciling = False
 
     async def _housekeeping(self):
         while True:
